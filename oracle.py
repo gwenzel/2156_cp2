@@ -218,7 +218,7 @@ class AdvancedFeatureEngineer:
         return all_features
 
 
-class BusinessOracle:
+class BaseOracle:
     """
     Business-focused Oracle with specialized features and models
     """
@@ -227,10 +227,11 @@ class BusinessOracle:
         self.model = None
         self.scaler = None
         self.feature_engineer = AdvancedFeatureEngineer()
+        self.type = ""
 
     def create_features(self, grids):
-        """Create features specifically for business advisor"""
-        print("Creating features for Business Advisor...")
+        """Create features specifically for advisor"""
+        print(f"Creating features for {self.type} Advisor...")
         all_features = self.feature_engineer.create_all_features(grids)
         return all_features
 
@@ -238,7 +239,7 @@ class BusinessOracle:
         """ Fit model for business advisor using autogluon """
 
         print(f"\n{'='*50}")
-        print(f"Training AutoGluon model for Business Advisor")
+        print(f"Training AutoGluon model for {self.type} Advisor")
         print(f"{'='*50}")
 
         # Get labeled data
@@ -310,27 +311,37 @@ class BusinessOracle:
             self.model = pickle.load(f)
 
 
-class TaxOracle(BusinessOracle):
+class BusinessOracle(BaseOracle):
+    """
+    Business-focused Oracle wit specialized features and models
+    """
+    def __init__(self):
+        super().__init__()
+        self.feature_engineer = AdvancedFeatureEngineer()
+        self.type = "Business"
+
+
+class TaxOracle(BaseOracle):
     """
     Tax-focused Oracle with specialized features and models
-    wrapper on BusinessOracle
     """
     def __init__(self):
         super().__init__()
         self.feature_engineer = AdvancedFeatureEngineer()
+        self.type = "Tax"
 
 
-class WellnessOracle(BusinessOracle):
+class WellnessOracle(BaseOracle):
     """
     Wellness-focused Oracle with specialized features and models
-    based on BusinessOracle
     """
     def __init__(self):
         super().__init__()
         self.feature_engineer = AdvancedFeatureEngineer()
+        self.type = "Wellness"
 
 
-class TransportationOracle(BusinessOracle):
+class TransportationOracle(BaseOracle):
     """
     Transportation-focused Oracle with specialized features and models
     based on BusinessOracle, but including the specialized features for transportation
@@ -338,12 +349,7 @@ class TransportationOracle(BusinessOracle):
     def __init__(self):
         super().__init__()
         self.feature_engineer = AdvancedTransportationFeatures()
-        
-    def create_features(self, grids):
-        """Create features specifically for transportation advisor"""
-        print("Creating features for Transportation Advisor...")
-        all_features = self.feature_engineer.create_all_transportation_features(grids)
-        return all_features
+        self.type = "Transportation"
 
 
 # Analyze Oracle Results
@@ -742,7 +748,7 @@ class AdvancedTransportationFeatures:
         print(f"Created {features_array.shape[1]} flow optimization features")
         return features_array
     
-    def create_all_transportation_features(self, grids):
+    def create_all_features(self, grids):
         """Combine all transportation-specific features"""
         print("🔧 Creating advanced transportation connectivity features...")
         
