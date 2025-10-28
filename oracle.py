@@ -1236,3 +1236,11 @@ class CityCNN1Plus(nn.Module):
         x = self.block1(x); x = self.block2(x); x = self.block3(x); x = self.gap(x)
         return self.head(x)
 
+
+class CNNWellnessOracle(CNNTransportationOracle):
+    """
+    Same as the transportation oracle
+    """
+    def __init__(self):
+        super().__init__()
+        self.type = "Wellness"
