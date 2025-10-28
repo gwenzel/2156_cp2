@@ -210,3 +210,4 @@ data/submissions
 *.npy
 *.txt
 AutogluonModels/*
+*.json
