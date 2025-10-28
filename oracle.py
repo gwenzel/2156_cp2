@@ -10,9 +10,10 @@ from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from scipy.spatial.distance import cdist
 
 from autogluon.tabular import TabularPredictor
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
 
 
 class AdvancedFeatureEngineer:
@@ -776,15 +777,14 @@ class CNNTransportationOracle:
         self.model = None
         self.scaler = None
         self.feature_engineer = AdvancedTransportationFeatures()
-        # Check if tensorflow is available
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Check if PyTorch is available
         try:
-            self.tf = tf
-            self.keras = keras
-            self.layers = layers
-            self.tf_available = True
+            self.torch_available = True
+            print(f"🔥 PyTorch available, using device: {self.device}")
         except ImportError:
-            self.tf_available = False
-            print("⚠️ TensorFlow not available, falling back to feature-based approach")
+            self.torch_available = False
+            print("⚠️ PyTorch not available, falling back to feature-based approach")
     
     def create_enhanced_features(self, grids):
         """Create enhanced transportation features"""
@@ -792,101 +792,71 @@ class CNNTransportationOracle:
             self.feature_engineer = AdvancedTransportationFeatures()
         return self.feature_engineer.create_all_features(grids)
     
-    def create_cnn_model(self, input_shape=(7, 7, 1), 
-                        conv_filters=[32, 64, 128, 64], 
-                        conv_kernels=[(3,3), (3,3), (3,3), (7,7)],
-                        dense_layers=[256, 128, 64],
-                        dropout_rates=[0.3, 0.2],
-                        learning_rate=0.001,
-                        activation='relu'):
-        """Create CNN architecture optimized for 7x7 transportation grids
+    def create_cnn_model(self, model_type='standard', **kwargs):
+        """Create PyTorch CNN model for transportation scoring
         
         Parameters:
-        - input_shape: Shape of input grids (default: (7, 7, 1))
-        - conv_filters: List of filter numbers for conv layers (default: [32, 64, 128, 64])
-        - conv_kernels: List of kernel sizes for conv layers (default: [(3,3), (3,3), (3,3), (7,7)])
-        - dense_layers: List of neurons in dense layers (default: [256, 128, 64])
-        - dropout_rates: List of dropout rates (default: [0.3, 0.2])
-        - learning_rate: Adam optimizer learning rate (default: 0.001)
-        - activation: Activation function for hidden layers (default: 'relu')
+        - model_type: 'standard' (CityCNN1) or 'deep' (CityCNN1Plus)
+        - **kwargs: Additional parameters for the model
         """
-        if not self.tf_available:
-            raise ImportError("TensorFlow not available for CNN implementation")
+        if not self.torch_available:
+            raise ImportError("PyTorch not available for CNN implementation")
         
-        layers_list = []
+        if model_type == 'standard':
+            model = CityCNN1(in_ch=5, p=kwargs.get('dropout', 0.25))
+        elif model_type == 'deep':
+            model = CityCNN1Plus(in_ch=5, 
+                               p_head=kwargs.get('p_head', 0.35), 
+                               p_mid=kwargs.get('p_mid', 0.10))
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}. Use 'standard' or 'deep'")
         
-        # Add convolutional layers
-        for i, (filters, kernel) in enumerate(zip(conv_filters, conv_kernels)):
-            if i == 0:
-                # First layer needs input_shape
-                layers_list.append(
-                    self.layers.Conv2D(filters, kernel, activation=activation, 
-                                     padding='same' if kernel != (7,7) else 'valid',
-                                     input_shape=input_shape, 
-                                     name=f'conv_layer_{i+1}')
-                )
-            else:
-                layers_list.append(
-                    self.layers.Conv2D(filters, kernel, activation=activation,
-                                     padding='same' if kernel != (7,7) else 'valid',
-                                     name=f'conv_layer_{i+1}')
-                )
-            layers_list.append(self.layers.BatchNormalization())
-        
-        # Flatten
-        layers_list.append(self.layers.Flatten())
-        
-        # Add dropout after flatten
-        if len(dropout_rates) > 0:
-            layers_list.append(self.layers.Dropout(dropout_rates[0]))
-        
-        # Add dense layers
-        for i, neurons in enumerate(dense_layers):
-            layers_list.append(
-                self.layers.Dense(neurons, activation=activation, 
-                                name=f'dense_layer_{i+1}')
-            )
-            # Add dropout between dense layers (skip last layer)
-            if i < len(dense_layers) - 1 and len(dropout_rates) > 1:
-                layers_list.append(self.layers.Dropout(dropout_rates[1]))
-        
-        # Output layer
-        layers_list.append(self.layers.Dense(1, activation='linear', name='output'))
-        
-        model = self.keras.Sequential(layers_list)
-        
-        # Compile with appropriate optimizer and loss
-        model.compile(
-            optimizer=self.keras.optimizers.Adam(learning_rate=learning_rate),
-            loss='mse',
-            metrics=['mae', 'mse']
-        )
-        
-        return model
+        return model.to(self.device)
+    
+    def to_one_hot_5ch(self, grids_np):
+        """Convert grids to one-hot encoding with 5 channels"""
+        g = torch.as_tensor(grids_np, dtype=torch.long)
+        oh = F.one_hot(g, num_classes=5)  # (N, 7, 7, 5)
+        return oh.permute(0, 3, 1, 2).contiguous().float()  # (N, 5, 7, 7)
+    
+    def augment_symmetries(self, x5ch, use_aug=True):
+        """Apply data augmentation via symmetries"""
+        if not use_aug: 
+            return x5ch
+        if torch.rand(()) < 0.5: 
+            x5ch = torch.flip(x5ch, dims=[-1])  # horizontal flip
+        if torch.rand(()) < 0.5: 
+            x5ch = torch.flip(x5ch, dims=[-2])  # vertical flip
+        k = torch.randint(0, 4, (1,)).item()  # 0,90,180,270 deg
+        if k: 
+            x5ch = torch.rot90(x5ch, k, dims=[-2, -1])
+        return x5ch
     
     def fit_model(self, grids, ratings, 
                  epochs=100, 
-                 batch_size=32, 
+                 batch_size=128, 
                  test_size=0.2, 
+                 learning_rate=3e-4,
+                 weight_decay=7e-4,
                  early_stopping_patience=20,
-                 lr_reduction_factor=0.5,
-                 lr_reduction_patience=10,
-                 min_lr=1e-7,
+                 use_augmentation=True,
+                 model_type='standard',
                  **model_params):
-        """Fit CNN model for transportation advisor
+        """Fit PyTorch CNN model for transportation advisor
         
         Parameters:
         - epochs: Number of training epochs (default: 100)
-        - batch_size: Training batch size (default: 32)
+        - batch_size: Training batch size (default: 128)
         - test_size: Fraction of data for testing (default: 0.2)
+        - learning_rate: Adam optimizer learning rate (default: 3e-4)
+        - weight_decay: L2 regularization (default: 7e-4)
         - early_stopping_patience: Epochs to wait before early stopping (default: 20)
-        - lr_reduction_factor: Factor to reduce learning rate (default: 0.5)
-        - lr_reduction_patience: Epochs to wait before reducing LR (default: 10)
-        - min_lr: Minimum learning rate (default: 1e-7)
+        - use_augmentation: Apply data augmentation (default: True)
+        - model_type: 'standard' or 'deep' (default: 'standard')
         - **model_params: Additional parameters for create_cnn_model()
         """
         print(f"\n{'='*60}")
-        print(f"Training CNN Transportation Oracle")
+        print(f"Training PyTorch CNN Transportation Oracle")
         print(f"{'='*60}")
         
         print(f"Available training samples: {len(grids)}")
@@ -894,109 +864,207 @@ class CNNTransportationOracle:
         print(f"  - Epochs: {epochs}")
         print(f"  - Batch size: {batch_size}")
         print(f"  - Test size: {test_size}")
-        print(f"  - Early stopping patience: {early_stopping_patience}")
+        print(f"  - Learning rate: {learning_rate}")
+        print(f"  - Model type: {model_type}")
+        print(f"  - Device: {self.device}")
         
-        # CNN approach
-        print("🧠 Using CNN approach for spatial pattern recognition...")
+        # PyTorch approach
+        print("🔥 Using PyTorch CNN approach for spatial pattern recognition...")
         
-        # Reshape grids for CNN (add channel dimension)
-        X = grids.reshape(-1, 7, 7, 1).astype('float32')
-        # Normalize grid values
-        X = X / 4.0  # Since district values are 0-4
-        
-        y = ratings.astype('float32')
-        
-        # Train-test split
+        # Train-test split on original grids
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42)
+            grids, ratings, test_size=test_size, random_state=42)
         
-        # Create and compile model
-        self.model = self.create_cnn_model(**model_params)
+        # Convert to one-hot encoding
+        Xt_train = self.to_one_hot_5ch(X_train)  # (N, 5, 7, 7)
+        Xt_test = self.to_one_hot_5ch(X_test)
+        
+        # Convert to PyTorch tensors
+        yt_train = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
+        yt_test = torch.tensor(y_test, dtype=torch.float32).view(-1, 1)
+        
+        # Create datasets and data loaders
+        train_dataset = TensorDataset(Xt_train, yt_train)
+        test_dataset = TensorDataset(Xt_test, yt_test)
+        
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        
+        # Create model
+        self.model = self.create_cnn_model(model_type=model_type, **model_params)
         
         print("🏗️ CNN Architecture:")
-        self.model.summary()
+        print(self.model)
         
-        # Early stopping and model checkpointing
-        callbacks = [
-            self.keras.callbacks.EarlyStopping(
-                monitor='val_loss', patience=early_stopping_patience, restore_best_weights=True),
-            self.keras.callbacks.ReduceLROnPlateau(
-                monitor='val_loss', factor=lr_reduction_factor, patience=lr_reduction_patience, min_lr=min_lr)
-        ]
-        
-        # Train the model
-        print("🚀 Training CNN model...")
-        history = self.model.fit(
-            X_train, y_train,
-            validation_data=(X_test, y_test),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=callbacks,
-            verbose=1
+        # Optimizer and loss
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=4, threshold=1e-4, 
+            cooldown=0, min_lr=0.0, eps=1e-8
         )
+        criterion = nn.MSELoss()
         
-        # Evaluate the model
-        train_predictions = self.model.predict(X_train)
-        test_predictions = self.model.predict(X_test)
+        # Training loop with early stopping
+        best_val_loss = float('inf')
+        best_state = None
+        patience_counter = 0
         
+        print("🚀 Training PyTorch CNN model...")
+        
+        for epoch in range(1, epochs + 1):
+            # Training phase
+            self.model.train()
+            train_loss = 0.0
+            
+            for batch_x, batch_y in train_loader:
+                # Apply augmentation
+                if use_augmentation:
+                    batch_x = self.augment_symmetries(batch_x, use_aug=True)
+                
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                
+                # Forward pass
+                predictions = self.model(batch_x)
+                loss = criterion(predictions, batch_y)
+                
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                train_loss += loss.item() * batch_x.size(0)
+            
+            train_loss /= len(train_dataset)
+            
+            # Validation phase
+            self.model.eval()
+            val_loss = 0.0
+            
+            with torch.no_grad():
+                for batch_x, batch_y in test_loader:
+                    batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                    predictions = self.model(batch_x)
+                    val_loss += criterion(predictions, batch_y).item() * batch_x.size(0)
+            
+            val_loss /= len(test_dataset)
+            scheduler.step(val_loss)
+            
+            # Early stopping check
+            if val_loss < best_val_loss - 1e-6:
+                best_val_loss = val_loss
+                best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stopping_patience:
+                    print(f"Early stopping at epoch {epoch}")
+                    break
+            
+            if epoch % 10 == 0 or epoch == 1:
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"Epoch {epoch:3d}: Train Loss = {train_loss:.6f}, Val Loss = {val_loss:.6f}, LR = {current_lr:.2e}")
+        
+        # Load best model
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+        self.model.to(self.device)
+        
+        # Final evaluation
+        self.model.eval()
+        with torch.no_grad():
+            # Training predictions
+            train_preds = []
+            for batch_x, batch_y in DataLoader(train_dataset, batch_size=batch_size):
+                batch_x = batch_x.to(self.device)
+                preds = self.model(batch_x).cpu().numpy().reshape(-1)
+                train_preds.append(preds)
+            train_predictions = np.concatenate(train_preds)
+            
+            # Test predictions
+            test_preds = []
+            for batch_x, batch_y in DataLoader(test_dataset, batch_size=batch_size):
+                batch_x = batch_x.to(self.device)
+                preds = self.model(batch_x).cpu().numpy().reshape(-1)
+                test_preds.append(preds)
+            test_predictions = np.concatenate(test_preds)
+        
+        # Calculate R² scores
         train_r2 = r2_score(y_train, train_predictions)
         test_r2 = r2_score(y_test, test_predictions)
         
-        print(f"\n📊 CNN Performance:")
+        print(f"\n📊 PyTorch CNN Performance:")
         print(f"   Training R²: {train_r2:.4f}")
         print(f"   Test R²: {test_r2:.4f}")
-
-        train_data = {}
-        train_data['target'] = y_train
-        test_data = {}
-        test_data['target'] = y_test
+        
+        # Return data in expected format
+        train_data = {'target': y_train}
+        test_data = {'target': y_test}
         
         return test_r2, train_data, test_data
 
-    def predict(self, grids):
+    def predict(self, grids, batch_size=1024):
         """Predict transportation scores for grids"""
         if self.model is None:
             raise ValueError("Model not trained yet. Call fit_model first.")
         
         print(f"🚛 Creating transportation predictions for {len(grids)} grids...")
         
-        if self.tf_available and hasattr(self.model, 'predict'):
-            # CNN prediction
-            X = grids.reshape(-1, 7, 7, 1).astype('float32') / 4.0
-            predictions = self.model.predict(X, verbose=0)
-            return predictions.flatten()
+        if self.torch_available and hasattr(self.model, 'forward'):
+            # PyTorch CNN prediction
+            self.model.eval()
+            predictions = []
+            
+            # Convert to one-hot encoding
+            X_onehot = self.to_one_hot_5ch(grids)
+            
+            # Create dataset and dataloader
+            dataset = TensorDataset(X_onehot)
+            dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            
+            with torch.no_grad():
+                for (batch_x,) in dataloader:
+                    batch_x = batch_x.to(self.device)
+                    batch_preds = self.model(batch_x).cpu().numpy().reshape(-1)
+                    predictions.append(batch_preds)
+            
+            return np.concatenate(predictions)
         else:
-            # Feature-based prediction
+            # Feature-based prediction fallback
             features = self.feature_engineer.create_all_features(grids)
             if self.scaler:
                 features = self.scaler.transform(features)
             return self.model.predict(features)
     
     def save_model(self, filename):
-        """Save the trained model"""
-        if self.tf_available and hasattr(self.model, 'save'):
-            # Save CNN model
-            model_filename = filename.replace('.pkl', '_cnn.h5')
-            self.model.save(model_filename)
+        """Save the trained PyTorch model"""
+        if self.torch_available and hasattr(self.model, 'state_dict'):
+            # Save PyTorch model
+            model_filename = filename.replace('.pkl', '_pytorch.pth')
+            torch.save({
+                'model_state_dict': self.model.state_dict(),
+                'model_class': self.model.__class__.__name__,
+                'device': str(self.device)
+            }, model_filename)
             
-            # Save scaler and metadata
+            # Save metadata
             metadata = {
                 'type': self.type,
-                'tf_available': self.tf_available,
+                'torch_available': self.torch_available,
                 'scaler': self.scaler,
-                'model_type': 'CNN'
+                'model_type': 'PyTorch CNN',
+                'device': str(self.device)
             }
             with open(filename, 'wb') as f:
                 pickle.dump(metadata, f)
             
-            print(f"💾 Saved CNN model to {model_filename} and metadata to {filename}")
+            print(f"💾 Saved PyTorch model to {model_filename} and metadata to {filename}")
         else:
             # Save feature-based model
             model_data = {
                 'model': self.model,
                 'scaler': self.scaler,
                 'type': self.type,
-                'tf_available': self.tf_available,
+                'torch_available': self.torch_available,
                 'model_type': 'Feature-based'
             }
             with open(filename, 'wb') as f:
@@ -1005,23 +1073,34 @@ class CNNTransportationOracle:
             print(f"💾 Saved feature-based model to {filename}")
     
     def load_model(self, filename):
-        """Load the trained model"""
-        if self.tf_available:
+        """Load the trained PyTorch model"""
+        if self.torch_available:
             try:
-                # Try to load CNN model
-                model_filename = filename.replace('.pkl', '_cnn.h5')
+                # Try to load PyTorch model
+                model_filename = filename.replace('.pkl', '_pytorch.pth')
                 if os.path.exists(model_filename):
-                    self.model = self.keras.models.load_model(model_filename)
+                    checkpoint = torch.load(model_filename, map_location=self.device)
+                    
+                    # Recreate model based on saved class name
+                    model_class = checkpoint['model_class']
+                    if model_class == 'CityCNN1':
+                        self.model = CityCNN1().to(self.device)
+                    elif model_class == 'CityCNN1Plus':
+                        self.model = CityCNN1Plus().to(self.device)
+                    else:
+                        raise ValueError(f"Unknown model class: {model_class}")
+                    
+                    self.model.load_state_dict(checkpoint['model_state_dict'])
                     
                     # Load metadata
                     with open(filename, 'rb') as f:
                         metadata = pickle.load(f)
                     self.scaler = metadata.get('scaler')
                     
-                    print(f"📁 Loaded CNN model from {model_filename}")
+                    print(f"📁 Loaded PyTorch model from {model_filename}")
                     return
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠️ Failed to load PyTorch model: {e}")
         
         # Load feature-based model
         with open(filename, 'rb') as f:
@@ -1033,42 +1112,55 @@ class CNNTransportationOracle:
         print(f"📁 Loaded feature-based model from {filename}")
     
     def get_model_configs(self):
-        """Get predefined CNN model configurations for experimentation"""
+        """Get predefined PyTorch CNN model configurations for experimentation"""
         configs = {
             'lightweight': {
-                'conv_filters': [16, 32, 64],
-                'conv_kernels': [(3,3), (3,3), (5,5)],
-                'dense_layers': [128, 64],
-                'dropout_rates': [0.2, 0.1],
-                'learning_rate': 0.001
+                'model_type': 'standard',
+                'dropout': 0.2,
+                'learning_rate': 0.001,
+                'batch_size': 64,
+                'epochs': 80,
+                'use_augmentation': False
             },
             'standard': {
-                'conv_filters': [32, 64, 128, 64],
-                'conv_kernels': [(3,3), (3,3), (3,3), (7,7)],
-                'dense_layers': [256, 128, 64],
-                'dropout_rates': [0.3, 0.2],
-                'learning_rate': 0.001
+                'model_type': 'standard',
+                'dropout': 0.25,
+                'learning_rate': 3e-4,
+                'weight_decay': 7e-4,
+                'batch_size': 128,
+                'epochs': 100,
+                'use_augmentation': True
             },
             'deep': {
-                'conv_filters': [32, 64, 128, 256, 128],
-                'conv_kernels': [(3,3), (3,3), (3,3), (3,3), (5,5)],
-                'dense_layers': [512, 256, 128, 64],
-                'dropout_rates': [0.4, 0.3],
-                'learning_rate': 0.0005
+                'model_type': 'deep',
+                'p_head': 0.35,
+                'p_mid': 0.10,
+                'learning_rate': 2e-4,
+                'weight_decay': 1e-3,
+                'batch_size': 64,
+                'epochs': 150,
+                'use_augmentation': True
             },
-            'wide': {
-                'conv_filters': [64, 128, 256, 128],
-                'conv_kernels': [(3,3), (3,3), (3,3), (7,7)],
-                'dense_layers': [512, 256, 128],
-                'dropout_rates': [0.3, 0.2],
-                'learning_rate': 0.001
+            'fast': {
+                'model_type': 'standard',
+                'dropout': 0.15,
+                'learning_rate': 5e-4,
+                'weight_decay': 5e-4,
+                'batch_size': 256,
+                'epochs': 50,
+                'use_augmentation': False,
+                'early_stopping_patience': 10
             },
-            'minimal': {
-                'conv_filters': [16, 32],
-                'conv_kernels': [(3,3), (5,5)],
-                'dense_layers': [64, 32],
-                'dropout_rates': [0.2],
-                'learning_rate': 0.002
+            'robust': {
+                'model_type': 'deep',
+                'p_head': 0.4,
+                'p_mid': 0.15,
+                'learning_rate': 1e-4,
+                'weight_decay': 2e-3,
+                'batch_size': 64,
+                'epochs': 200,
+                'use_augmentation': True,
+                'early_stopping_patience': 30
             }
         }
         return configs
@@ -1077,7 +1169,7 @@ class CNNTransportationOracle:
         """Fit model using a predefined configuration
         
         Parameters:
-        - config_name: One of 'lightweight', 'standard', 'deep', 'wide', 'minimal'
+        - config_name: One of 'lightweight', 'standard', 'deep', 'fast', 'robust'
         - **training_params: Additional training parameters for fit_model()
         """
         configs = self.get_model_configs()
@@ -1090,4 +1182,57 @@ class CNNTransportationOracle:
             print(f"   {key}: {value}")
         
         return self.fit_model(grids, ratings, **model_config, **training_params)
+
+
+class CityCNN1(nn.Module):
+    """Compact CNN with two conv blocks and GAP head."""
+    def __init__(self, in_ch=5, p=0.25):
+        super().__init__()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.block1 = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, padding=1),   nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+        )
+        self.block2 = nn.Sequential(
+            nn.Conv2d(64, 128, 3, padding=1),  nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+        )
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.head = nn.Sequential(
+            nn.Flatten(), nn.Dropout(p),
+            nn.Linear(128, 64), nn.ReLU(inplace=True),
+            nn.Dropout(p), nn.Linear(64, 1),
+        )
+    def forward(self, x):
+        x = self.block1(x); x = self.block2(x); x = self.gap(x)
+        return self.head(x)
+
+class CityCNN1Plus(nn.Module):
+    """Deeper/regularized CNN for tougher advisors."""
+    def __init__(self, in_ch=5, p_head=0.35, p_mid=0.10):
+        super().__init__()
+        self.block1 = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.Dropout(p_mid),
+            nn.Conv2d(64, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+        )
+        self.block2 = nn.Sequential(
+            nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Dropout(p_mid),
+            nn.Conv2d(128, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+        )
+        self.block3 = nn.Sequential(
+            nn.Conv2d(128, 256, 3, padding=1), nn.BatchNorm2d(256), nn.ReLU(inplace=True),
+            nn.Dropout(p_mid),
+            nn.Conv2d(256, 256, 3, padding=1), nn.BatchNorm2d(256), nn.ReLU(inplace=True),
+        )
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.head = nn.Sequential(
+            nn.Flatten(), nn.Dropout(p_head),
+            nn.Linear(256, 128), nn.ReLU(inplace=True),
+            nn.Dropout(p_head), nn.Linear(128, 1),
+        )
+    def forward(self, x):
+        x = self.block1(x); x = self.block2(x); x = self.block3(x); x = self.gap(x)
+        return self.head(x)
 
