@@ -1244,3 +1244,15 @@ class CNNWellnessOracle(CNNTransportationOracle):
     def __init__(self):
         super().__init__()
         self.type = "Wellness"
+
+
+class CNNBusinessOracle(CNNTransportationOracle):
+    def __init__(self):
+        super().__init__()
+        self.type = "Business"
+
+
+class CNNTaxOracle(CNNTransportationOracle):
+    def __init__(self):
+        super().__init__()
+        self.type = "Tax"
