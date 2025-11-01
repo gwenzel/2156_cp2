@@ -12,7 +12,7 @@ Run each oracle training notebook sequentially to train specialized predictors f
 #### 1.1 Wellness Oracle Training
 ```bash
 # Run the wellness oracle notebook
-jupyter notebook 1_oracle_wellness.ipynb
+jupyter notebook 0_fit_oracle_wellness.ipynb
 ```
 - **Purpose**: Trains CNN oracle for wellness advisor predictions
 - **Input**: Labeled grid datasets with wellness scores  
@@ -23,7 +23,7 @@ jupyter notebook 1_oracle_wellness.ipynb
 #### 1.2 Tax Oracle Training  
 ```bash
 # Run the tax oracle notebook
-jupyter notebook 1_oracle_tax.ipynb
+jupyter notebook 0_fit_oracle_tax.ipynb
 ```
 - **Purpose**: Trains CNN oracle for tax advisor predictions
 - **Input**: Labeled grid datasets with tax scores
@@ -33,7 +33,7 @@ jupyter notebook 1_oracle_tax.ipynb
 #### 1.3 Transportation Oracle Training
 ```bash
 # Run the transportation oracle notebook
-jupyter notebook 1_oracle_transportation.ipynb
+jupyter notebook 0_fit_oracle_transportation.ipynb
 ```
 - **Purpose**: Trains CNN oracle for transportation advisor predictions  
 - **Input**: Labeled grid datasets with transportation scores
@@ -43,7 +43,7 @@ jupyter notebook 1_oracle_transportation.ipynb
 #### 1.4 Business Oracle Training
 ```bash
 # Run the business oracle notebook
-jupyter notebook 1_oracle_business.ipynb
+jupyter notebook 0_fit_oracle_business.ipynb
 ```
 - **Purpose**: Trains CNN oracle for business advisor predictions
 - **Input**: Labeled grid datasets with business scores
