@@ -772,12 +772,12 @@ class CNNTransportationOracle:
     Uses Convolutional Neural Networks to understand transportation connectivity patterns.
     """
     
-    def __init__(self):
+    def __init__(self, advisor_id=2):  # Default to advisor_id=2 for Transportation
         self.type = "Transportation"
         self.model = None
         self.scaler = None
-        self.feature_engineer = AdvancedTransportationFeatures()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.advisor_id = advisor_id  # For auto architecture selection (Transportation=2, uses deep)
         # Check if PyTorch is available
         try:
             self.torch_available = True
@@ -786,14 +786,8 @@ class CNNTransportationOracle:
             self.torch_available = False
             print("⚠️ PyTorch not available, falling back to feature-based approach")
     
-    def create_enhanced_features(self, grids):
-        """Create enhanced transportation features"""
-        if self.feature_engineer is None:
-            self.feature_engineer = AdvancedTransportationFeatures()
-        return self.feature_engineer.create_all_features(grids)
-    
     def create_cnn_model(self, model_type='standard', **kwargs):
-        """Create PyTorch CNN model for transportation scoring
+        """Create PyTorch CNN model for advisor scoring
         
         Parameters:
         - model_type: 'standard' (CityCNN1) or 'deep' (CityCNN1Plus)
@@ -833,26 +827,34 @@ class CNNTransportationOracle:
         return x5ch
     
     def fit_model(self, grids, ratings, 
-                 epochs=100, 
+                 epochs=250, 
                  batch_size=128, 
                  test_size=0.2, 
                  learning_rate=3e-4,
                  weight_decay=7e-4,
                  early_stopping_patience=20,
                  use_augmentation=True,
-                 model_type='standard',
+                 use_weighted_loss=True,
+                 weighted_loss_gamma=0.75,
+                 use_ensemble=True,
+                 ensemble_seeds=[42, 43, 44],
+                 model_type='auto',
                  **model_params):
-        """Fit PyTorch CNN model for transportation advisor
+        """Fit PyTorch CNN model for transportation advisor (CP02_v10 Enhanced)
         
         Parameters:
-        - epochs: Number of training epochs (default: 100)
+        - epochs: Number of training epochs (default: 250, increased from CP02_v10)
         - batch_size: Training batch size (default: 128)
         - test_size: Fraction of data for testing (default: 0.2)
         - learning_rate: Adam optimizer learning rate (default: 3e-4)
         - weight_decay: L2 regularization (default: 7e-4)
         - early_stopping_patience: Epochs to wait before early stopping (default: 20)
         - use_augmentation: Apply data augmentation (default: True)
-        - model_type: 'standard' or 'deep' (default: 'standard')
+        - use_weighted_loss: Use weighted MSE loss for hard examples (default: True)
+        - weighted_loss_gamma: Gamma parameter for weighted loss (default: 0.75)
+        - use_ensemble: Train ensemble of models with different seeds (default: True)
+        - ensemble_seeds: Seeds for ensemble training (default: [42, 43, 44])
+        - model_type: 'auto', 'standard' or 'deep' (default: 'auto' - chooses based on advisor)
         - **model_params: Additional parameters for create_cnn_model()
         """
         print(f"\n{'='*60}")
@@ -890,103 +892,261 @@ class CNNTransportationOracle:
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         
-        # Create model
-        self.model = self.create_cnn_model(model_type=model_type, **model_params)
+        # Determine model architecture based on advisor (order: ["Wellness", "Tax", "Transportation", "Business"])
+        if model_type == 'auto':
+            # Use CityCNN1Plus for deep advisors: Wellness (0) and Transportation (2)
+            model_type = 'deep' if hasattr(self, 'advisor_id') and self.advisor_id in [0, 2] else 'standard'
+            print(f"🤖 Auto-selected model type: {model_type} (advisor_id: {getattr(self, 'advisor_id', 'None')})")
         
-        print("🏗️ CNN Architecture:")
-        print(self.model)
-        
-        # Optimizer and loss
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=4, threshold=1e-4, 
-            cooldown=0, min_lr=0.0, eps=1e-8
-        )
-        criterion = nn.MSELoss()
-        
-        # Training loop with early stopping
-        best_val_loss = float('inf')
-        best_state = None
-        patience_counter = 0
-        
-        print("🚀 Training PyTorch CNN model...")
-        
-        for epoch in range(1, epochs + 1):
-            # Training phase
-            self.model.train()
-            train_loss = 0.0
+        # Ensemble training (CP02_v10 enhancement)
+        if use_ensemble:
+            print(f"🎭 Training ensemble with seeds: {ensemble_seeds}")
+            ensemble_models = []
+            ensemble_predictions_train = []
+            ensemble_predictions_test = []
             
-            for batch_x, batch_y in train_loader:
-                # Apply augmentation
-                if use_augmentation:
-                    batch_x = self.augment_symmetries(batch_x, use_aug=True)
+            for seed_idx, seed in enumerate(ensemble_seeds):
+                print(f"\n🌱 Training model {seed_idx + 1}/{len(ensemble_seeds)} with seed {seed}")
                 
-                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                # Set seeds for reproducibility
+                torch.manual_seed(seed)
+                np.random.seed(seed)
                 
-                # Forward pass
-                predictions = self.model(batch_x)
-                loss = criterion(predictions, batch_y)
+                # Create model for this seed
+                model = self.create_cnn_model(model_type=model_type, **model_params)
                 
-                # Backward pass
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                if seed_idx == 0:
+                    print("🏗️ CNN Architecture:")
+                    print(model)
                 
-                train_loss += loss.item() * batch_x.size(0)
-            
-            train_loss /= len(train_dataset)
-            
-            # Validation phase
-            self.model.eval()
-            val_loss = 0.0
-            
-            with torch.no_grad():
-                for batch_x, batch_y in test_loader:
-                    batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-                    predictions = self.model(batch_x)
-                    val_loss += criterion(predictions, batch_y).item() * batch_x.size(0)
-            
-            val_loss /= len(test_dataset)
-            scheduler.step(val_loss)
-            
-            # Early stopping check
-            if val_loss < best_val_loss - 1e-6:
-                best_val_loss = val_loss
-                best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                # Optimizer and scheduler
+                optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='min', factor=0.5, patience=4, threshold=1e-4, 
+                    cooldown=0, min_lr=0.0, eps=1e-8
+                )
+                
+                # Weighted loss function (CP02_v10 enhancement)
+                if use_weighted_loss:
+                    def weighted_mse_loss(predictions, targets, gamma=weighted_loss_gamma):
+                        """Weighted MSE loss emphasizing hard examples (from CP02_v10)"""
+                        mse = (predictions - targets) ** 2
+                        weights = 1.0 + gamma * torch.abs(targets - 0.5) * 2.0
+                        return torch.mean(weights * mse)
+                    criterion = weighted_mse_loss
+                    print(f"📊 Using weighted MSE loss with gamma={weighted_loss_gamma}")
+                else:
+                    criterion = nn.MSELoss()
+                
+                # Training loop with early stopping
+                best_val_loss = float('inf')
+                best_state = None
                 patience_counter = 0
+                
+                for epoch in range(1, epochs + 1):
+                    # Training phase
+                    model.train()
+                    train_loss = 0.0
+                    
+                    for batch_x, batch_y in train_loader:
+                        # Apply augmentation
+                        if use_augmentation:
+                            batch_x = self.augment_symmetries(batch_x, use_aug=True)
+                        
+                        batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                        
+                        # Forward pass
+                        predictions = model(batch_x)
+                        loss = criterion(predictions, batch_y)
+                        
+                        # Backward pass
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
+                        
+                        train_loss += loss.item() * batch_x.size(0)
+                    
+                    train_loss /= len(train_dataset)
+                    
+                    # Validation phase
+                    model.eval()
+                    val_loss = 0.0
+                    
+                    with torch.no_grad():
+                        for batch_x, batch_y in test_loader:
+                            batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                            predictions = model(batch_x)
+                            if use_weighted_loss:
+                                val_loss += criterion(predictions, batch_y).item() * batch_x.size(0)
+                            else:
+                                val_loss += nn.MSELoss()(predictions, batch_y).item() * batch_x.size(0)
+                    
+                    val_loss /= len(test_dataset)
+                    scheduler.step(val_loss)
+                    
+                    # Early stopping check
+                    if val_loss < best_val_loss - 1e-6:
+                        best_val_loss = val_loss
+                        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= early_stopping_patience:
+                            print(f"Early stopping at epoch {epoch}")
+                            break
+                    
+                    if epoch % 10 == 0 or epoch == 1:
+                        current_lr = optimizer.param_groups[0]['lr']
+                        print(f"  Epoch {epoch:3d}: Train Loss = {train_loss:.6f}, Val Loss = {val_loss:.6f}, LR = {current_lr:.2e}")
+                
+                # Load best model state
+                if best_state is not None:
+                    model.load_state_dict(best_state)
+                model.to(self.device)
+                
+                # Store this model in ensemble
+                ensemble_models.append(model)
+                
+                # Get predictions from this model for ensemble averaging
+                model.eval()
+                with torch.no_grad():
+                    # Training predictions
+                    train_preds = []
+                    for batch_x, batch_y in DataLoader(train_dataset, batch_size=batch_size):
+                        batch_x = batch_x.to(self.device)
+                        preds = model(batch_x).cpu().numpy().reshape(-1)
+                        train_preds.append(preds)
+                    ensemble_predictions_train.append(np.concatenate(train_preds))
+                    
+                    # Test predictions  
+                    test_preds = []
+                    for batch_x, batch_y in DataLoader(test_dataset, batch_size=batch_size):
+                        batch_x = batch_x.to(self.device)
+                        preds = model(batch_x).cpu().numpy().reshape(-1)
+                        test_preds.append(preds)
+                    ensemble_predictions_test.append(np.concatenate(test_preds))
+            
+            # Average ensemble predictions (CP02_v10 technique)
+            print(f"\n🎯 Averaging ensemble predictions...")
+            train_predictions = np.mean(np.stack(ensemble_predictions_train, axis=0), axis=0)
+            test_predictions = np.mean(np.stack(ensemble_predictions_test, axis=0), axis=0)
+            
+            # Store first model as representative (for predict method)
+            self.model = ensemble_models[0]
+            self.ensemble_models = ensemble_models
+            
+        else:
+            # Single model training (original approach)
+            print("🎯 Training single model...")
+            self.model = self.create_cnn_model(model_type=model_type, **model_params)
+            
+            print("🏗️ CNN Architecture:")
+            print(self.model)
+            
+            # Optimizer and loss
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=4, threshold=1e-4, 
+                cooldown=0, min_lr=0.0, eps=1e-8
+            )
+            
+            # Weighted loss function
+            if use_weighted_loss:
+                def weighted_mse_loss(predictions, targets, gamma=weighted_loss_gamma):
+                    """Weighted MSE loss emphasizing hard examples"""
+                    mse = (predictions - targets) ** 2
+                    weights = 1.0 + gamma * torch.abs(targets - 0.5) * 2.0
+                    return torch.mean(weights * mse)
+                criterion = weighted_mse_loss
+                print(f"📊 Using weighted MSE loss with gamma={weighted_loss_gamma}")
             else:
-                patience_counter += 1
-                if patience_counter >= early_stopping_patience:
-                    print(f"Early stopping at epoch {epoch}")
-                    break
+                criterion = nn.MSELoss()
             
-            if epoch % 10 == 0 or epoch == 1:
-                current_lr = optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch:3d}: Train Loss = {train_loss:.6f}, Val Loss = {val_loss:.6f}, LR = {current_lr:.2e}")
-        
-        # Load best model
-        if best_state is not None:
-            self.model.load_state_dict(best_state)
-        self.model.to(self.device)
-        
-        # Final evaluation
-        self.model.eval()
-        with torch.no_grad():
-            # Training predictions
-            train_preds = []
-            for batch_x, batch_y in DataLoader(train_dataset, batch_size=batch_size):
-                batch_x = batch_x.to(self.device)
-                preds = self.model(batch_x).cpu().numpy().reshape(-1)
-                train_preds.append(preds)
-            train_predictions = np.concatenate(train_preds)
+            # Training loop with early stopping
+            best_val_loss = float('inf')
+            best_state = None
+            patience_counter = 0
             
-            # Test predictions
-            test_preds = []
-            for batch_x, batch_y in DataLoader(test_dataset, batch_size=batch_size):
-                batch_x = batch_x.to(self.device)
-                preds = self.model(batch_x).cpu().numpy().reshape(-1)
-                test_preds.append(preds)
-            test_predictions = np.concatenate(test_preds)
+            for epoch in range(1, epochs + 1):
+                # Training phase
+                self.model.train()
+                train_loss = 0.0
+                
+                for batch_x, batch_y in train_loader:
+                    # Apply augmentation
+                    if use_augmentation:
+                        batch_x = self.augment_symmetries(batch_x, use_aug=True)
+                    
+                    batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                    
+                    # Forward pass
+                    predictions = self.model(batch_x)
+                    loss = criterion(predictions, batch_y)
+                    
+                    # Backward pass
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    
+                    train_loss += loss.item() * batch_x.size(0)
+                
+                train_loss /= len(train_dataset)
+                
+                # Validation phase
+                self.model.eval()
+                val_loss = 0.0
+                
+                with torch.no_grad():
+                    for batch_x, batch_y in test_loader:
+                        batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                        predictions = self.model(batch_x)
+                        if use_weighted_loss:
+                            val_loss += criterion(predictions, batch_y).item() * batch_x.size(0)
+                        else:
+                            val_loss += nn.MSELoss()(predictions, batch_y).item() * batch_x.size(0)
+                
+                val_loss /= len(test_dataset)
+                scheduler.step(val_loss)
+                
+                # Early stopping check
+                if val_loss < best_val_loss - 1e-6:
+                    best_val_loss = val_loss
+                    best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= early_stopping_patience:
+                        print(f"Early stopping at epoch {epoch}")
+                        break
+                
+                if epoch % 10 == 0 or epoch == 1:
+                    current_lr = optimizer.param_groups[0]['lr']
+                    print(f"Epoch {epoch:3d}: Train Loss = {train_loss:.6f}, Val Loss = {val_loss:.6f}, LR = {current_lr:.2e}")
+            
+            # Load best model
+            if best_state is not None:
+                self.model.load_state_dict(best_state)
+            self.model.to(self.device)
+            
+            # Get single model predictions
+            self.model.eval()
+            with torch.no_grad():
+                # Training predictions
+                train_preds = []
+                for batch_x, batch_y in DataLoader(train_dataset, batch_size=batch_size):
+                    batch_x = batch_x.to(self.device)
+                    preds = self.model(batch_x).cpu().numpy().reshape(-1)
+                    train_preds.append(preds)
+                train_predictions = np.concatenate(train_preds)
+                
+                # Test predictions
+                test_preds = []
+                for batch_x, batch_y in DataLoader(test_dataset, batch_size=batch_size):
+                    batch_x = batch_x.to(self.device)
+                    preds = self.model(batch_x).cpu().numpy().reshape(-1)
+                    test_preds.append(preds)
+                test_predictions = np.concatenate(test_preds)
+
         
         # Calculate R² scores
         train_r2 = r2_score(y_train, train_predictions)
@@ -1002,25 +1162,79 @@ class CNNTransportationOracle:
         
         return test_r2, train_data, test_data
 
-    def predict(self, grids, batch_size=1024):
-        """Predict transportation scores for grids"""
+    def predict(self, grids, batch_size=1024, use_tta=False):
+        """Predict scores for grids (CP02_v10 Enhanced with TTA)"""
         if self.model is None:
             raise ValueError("Model not trained yet. Call fit_model first.")
         
-        print(f"🚛 Creating transportation predictions for {len(grids)} grids...")
+        print(f"Creating predictions for {len(grids)} grids...")
         
         if self.torch_available and hasattr(self.model, 'forward'):
-            # PyTorch CNN prediction
-            self.model.eval()
-            predictions = []
+            # PyTorch CNN prediction with optional ensemble and TTA
+            if hasattr(self, 'ensemble_models'):
+                return self.predict_ensemble_tta(grids, batch_size, use_tta)
+            else:
+                return self.predict_single_tta(grids, batch_size, use_tta)
+        else:
+            # Feature-based prediction fallback
+            features = self.feature_engineer.create_all_features(grids)
+            if self.scaler:
+                features = self.scaler.transform(features)
+            return self.model.predict(features)
+    
+    def predict_single_tta(self, grids, batch_size=1024, use_tta=False):
+        """Single model prediction with optional TTA"""
+        self.model.eval()
+        
+        # Convert to one-hot encoding
+        X_onehot = self.to_one_hot_5ch(grids)
+        
+        if use_tta:
+            print("🔄 Using Test-Time Augmentation (TTA)...")
+            # TTA with 6 augmentations (like CP02_v10)
+            all_predictions = []
             
-            # Convert to one-hot encoding
-            X_onehot = self.to_one_hot_5ch(grids)
+            for aug_idx in range(6):  # 6 different augmentations
+                dataset = TensorDataset(X_onehot)
+                dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+                
+                predictions = []
+                with torch.no_grad():
+                    for (batch_x,) in dataloader:
+                        # Apply specific augmentation
+                        if aug_idx == 0:
+                            # Original
+                            batch_aug = batch_x
+                        elif aug_idx == 1:
+                            # Horizontal flip
+                            batch_aug = torch.flip(batch_x, dims=[3])
+                        elif aug_idx == 2:
+                            # Vertical flip
+                            batch_aug = torch.flip(batch_x, dims=[2])
+                        elif aug_idx == 3:
+                            # Both flips
+                            batch_aug = torch.flip(batch_x, dims=[2, 3])
+                        elif aug_idx == 4:
+                            # Rotate 90 degrees
+                            batch_aug = torch.rot90(batch_x, k=1, dims=[2, 3])
+                        else:  # aug_idx == 5
+                            # Rotate 270 degrees
+                            batch_aug = torch.rot90(batch_x, k=3, dims=[2, 3])
+                        
+                        batch_aug = batch_aug.to(self.device)
+                        batch_preds = self.model(batch_aug).cpu().numpy().reshape(-1)
+                        predictions.append(batch_preds)
+                
+                all_predictions.append(np.concatenate(predictions))
             
-            # Create dataset and dataloader
+            # Average TTA predictions
+            return np.mean(np.stack(all_predictions, axis=0), axis=0)
+        else:
+            # Standard single prediction
             dataset = TensorDataset(X_onehot)
             dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
             
+            predictions = []
             with torch.no_grad():
                 for (batch_x,) in dataloader:
                     batch_x = batch_x.to(self.device)
@@ -1028,12 +1242,71 @@ class CNNTransportationOracle:
                     predictions.append(batch_preds)
             
             return np.concatenate(predictions)
-        else:
-            # Feature-based prediction fallback
-            features = self.feature_engineer.create_all_features(grids)
-            if self.scaler:
-                features = self.scaler.transform(features)
-            return self.model.predict(features)
+    
+    def predict_ensemble_tta(self, grids, batch_size=1024, use_tta=False):
+        """Ensemble prediction with optional TTA (CP02_v10 technique)"""
+        print(f"🎭 Using ensemble of {len(self.ensemble_models)} models...")
+        
+        ensemble_predictions = []
+        
+        for model_idx, model in enumerate(self.ensemble_models):
+            model.eval()
+            
+            # Convert to one-hot encoding
+            X_onehot = self.to_one_hot_5ch(grids)
+            
+            if use_tta:
+                print(f"🔄 Model {model_idx + 1}: Using TTA...")
+                # TTA for this model
+                all_predictions = []
+                
+                for aug_idx in range(6):
+                    dataset = TensorDataset(X_onehot)
+                    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+                    
+                    predictions = []
+                    with torch.no_grad():
+                        for (batch_x,) in dataloader:
+                            # Apply augmentation
+                            if aug_idx == 0:
+                                batch_aug = batch_x
+                            elif aug_idx == 1:
+                                batch_aug = torch.flip(batch_x, dims=[3])
+                            elif aug_idx == 2:
+                                batch_aug = torch.flip(batch_x, dims=[2])
+                            elif aug_idx == 3:
+                                batch_aug = torch.flip(batch_x, dims=[2, 3])
+                            elif aug_idx == 4:
+                                batch_aug = torch.rot90(batch_x, k=1, dims=[2, 3])
+                            else:
+                                batch_aug = torch.rot90(batch_x, k=3, dims=[2, 3])
+                            
+                            batch_aug = batch_aug.to(self.device)
+                            batch_preds = model(batch_aug).cpu().numpy().reshape(-1)
+                            predictions.append(batch_preds)
+                    
+                    all_predictions.append(np.concatenate(predictions))
+                
+                # Average TTA for this model
+                model_predictions = np.mean(np.stack(all_predictions, axis=0), axis=0)
+            else:
+                # Standard prediction for this model
+                dataset = TensorDataset(X_onehot)
+                dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+                
+                predictions = []
+                with torch.no_grad():
+                    for (batch_x,) in dataloader:
+                        batch_x = batch_x.to(self.device)
+                        batch_preds = model(batch_x).cpu().numpy().reshape(-1)
+                        predictions.append(batch_preds)
+                
+                model_predictions = np.concatenate(predictions)
+            
+            ensemble_predictions.append(model_predictions)
+        
+        # Average ensemble predictions (CP02_v10 technique)
+        return np.mean(np.stack(ensemble_predictions, axis=0), axis=0)
     
     def save_model(self, filename):
         """Save the trained PyTorch model"""
@@ -1182,7 +1455,7 @@ class CNNTransportationOracle:
             print(f"   {key}: {value}")
         
         return self.fit_model(grids, ratings, **model_config, **training_params)
-
+    
 
 class CityCNN1(nn.Module):
     """Compact CNN with two conv blocks and GAP head."""
@@ -1239,20 +1512,57 @@ class CityCNN1Plus(nn.Module):
 
 class CNNWellnessOracle(CNNTransportationOracle):
     """
-    Same as the transportation oracle
+    CNN Wellness Oracle (Advisor 0) - uses deep architecture (CityCNN1Plus)
     """
     def __init__(self):
-        super().__init__()
+        super().__init__(advisor_id=0)  # Advisor 0 - Wellness uses deep architecture
         self.type = "Wellness"
 
 
 class CNNBusinessOracle(CNNTransportationOracle):
+    """
+    CNN Business Oracle (Advisor 3) - uses standard architecture (CityCNN1)
+    """
     def __init__(self):
-        super().__init__()
+        super().__init__(advisor_id=3)  # Advisor 3 - Business uses standard architecture
         self.type = "Business"
 
 
 class CNNTaxOracle(CNNTransportationOracle):
+    """
+    CNN Tax Oracle (Advisor 1) - uses standard architecture (CityCNN1)
+    """
     def __init__(self):
-        super().__init__()
+        super().__init__(advisor_id=1)  # Advisor 1 - Tax uses standard architecture
         self.type = "Tax"
+
+
+def plot_and_r2(preds_train, preds_test, ratings_train, ratings_test, name):
+    #Create scatter plot
+    plt.figure(figsize=(10,6))
+    plt.scatter(ratings_train, preds_train, label='Train Set Preds', s=15, c="#BBBBBB", alpha=0.6) #train set in gray
+    plt.scatter(ratings_test, preds_test, label='Test Set Preds', s=20, c="#DC267F", alpha=0.8) #test set in magenta
+    plt.plot([0,1], [0,1], label="Perfect Prediction", linewidth=2, c="k", linestyle='--') #target line in black
+
+    #Set axis labels and title
+    plt.xlabel("Actual Rating")
+    plt.ylabel("Predicted Rating")
+    plt.title(f"{name} Oracle Predictions")
+
+    #Turn off top and right spines
+    ax = plt.gca()
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+
+    plt.legend() #Display legend
+    plt.grid(True, alpha=0.3)
+    plt.show() #Show plot
+
+    #Calculate R2 score for train and test sets
+    train_r2 = r2_score(ratings_train, preds_train)
+    test_r2 = r2_score(ratings_test, preds_test)
+    
+    print(f"{name} Oracle Train Set R² score: {train_r2:.4f}")
+    print(f"{name} Oracle Test Set R² score: {test_r2:.4f}")
+    
+    return train_r2, test_r2
