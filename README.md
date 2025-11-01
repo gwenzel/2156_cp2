@@ -9,15 +9,16 @@ This repository contains an advanced Oracle training pipeline for the 2156 Chall
 
 Run each oracle training notebook sequentially to train specialized predictors for each advisor:
 
-#### 1.1 Business Oracle Training
+#### 1.1 Wellness Oracle Training
 ```bash
-# Run the business oracle notebook
-jupyter notebook 1_oracle_business.ipynb
+# Run the wellness oracle notebook
+jupyter notebook 1_oracle_wellness.ipynb
 ```
-- **Purpose**: Trains CNN oracle for business advisor predictions
-- **Input**: Labeled grid datasets with business scores
-- **Output**: Trained business oracle model (saved to disk)
-- **Features**: Uses CityCNN1Plus architecture (deep model for difficult advisor 0)
+- **Purpose**: Trains CNN oracle for wellness advisor predictions
+- **Input**: Labeled grid datasets with wellness scores  
+- **Output**: Trained wellness oracle model (saved to disk)
+- **Features**: Uses CityCNN1Plus architecture (deep model for advisor 0)
+
 
 #### 1.2 Tax Oracle Training  
 ```bash
@@ -27,7 +28,7 @@ jupyter notebook 1_oracle_tax.ipynb
 - **Purpose**: Trains CNN oracle for tax advisor predictions
 - **Input**: Labeled grid datasets with tax scores
 - **Output**: Trained tax oracle model (saved to disk)
-- **Features**: Uses CityCNN1 architecture (standard model for advisor 3)
+- **Features**: Uses CityCNN1 architecture (standard model for advisor 1)
 
 #### 1.3 Transportation Oracle Training
 ```bash
@@ -39,15 +40,16 @@ jupyter notebook 1_oracle_transportation.ipynb
 - **Output**: Trained transportation oracle model (saved to disk)
 - **Features**: Uses CityCNN1Plus architecture (deep model for difficult advisor 2)
 
-#### 1.4 Wellness Oracle Training
+#### 1.4 Business Oracle Training
 ```bash
-# Run the wellness oracle notebook
-jupyter notebook 1_oracle_wellness.ipynb
+# Run the business oracle notebook
+jupyter notebook 1_oracle_business.ipynb
 ```
-- **Purpose**: Trains CNN oracle for wellness advisor predictions
-- **Input**: Labeled grid datasets with wellness scores  
-- **Output**: Trained wellness oracle model (saved to disk)
-- **Features**: Uses CityCNN1 architecture (standard model for advisor 1)
+- **Purpose**: Trains CNN oracle for business advisor predictions
+- **Input**: Labeled grid datasets with business scores
+- **Output**: Trained business oracle model (saved to disk)
+- **Features**: Uses CityCNN1 architecture (standard model for advisor 3)
+
 
 ### Phase 2: Apply All Oracles to Full Dataset
 
