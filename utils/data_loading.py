@@ -13,9 +13,15 @@ class DataLoader:
     """Handle loading of generated grids, original grids, and oracle predictions"""
     
     def __init__(self, data_dir='data'):
-        self.data_dir = data_dir
-        self.submissions_dir = os.path.join(data_dir, 'submissions')
-        self.generated_dir = os.path.join(data_dir, 'generated_grids')
+        # Get the parent directory (project root) from utils folder
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        
+        # Construct paths relative to project root
+        self.data_dir = os.path.join(project_root, data_dir)
+        self.submissions_dir = os.path.join(self.data_dir, 'submissions')
+        self.generated_dir = os.path.join(self.data_dir, 'generated_grids')
+        self.project_root = project_root
         
     def load_generated_grids(self):
         """Load the most recent generated grids and predictions"""
@@ -29,7 +35,7 @@ class DataLoader:
                 return None, None
                 
             generated_files = [f for f in os.listdir(self.generated_dir) 
-                             if f.startswith('compact_bias_free_grids_') and f.endswith('.npy')]
+                             if f.startswith('combined_constraint_free_grids_') and f.endswith('.npy')]
             
             if not generated_files:
                 print("⚠️  No generated grids files found")
@@ -42,9 +48,10 @@ class DataLoader:
             generated_grids = np.load(latest_file_path)
             
             # Try to load corresponding predictions
-            predictions_file = latest_file_path.replace('compact_bias_free_grids_', 'compact_bias_free_predictions_')
+            predictions_file = latest_file_path.replace('combined_constraint_free_grids_', 'combined_constraint_free_predictions_')
             if os.path.exists(predictions_file):
                 generated_predictions = np.load(predictions_file)
+                print(f"✅ Loaded predictions from: {os.path.basename(predictions_file)}")
             else:
                 print(f"⚠️  Predictions file not found: {predictions_file}")
                 
@@ -63,13 +70,13 @@ class DataLoader:
         original_predictions = None
         
         try:
-            # Load original grid data
+            # Load original grid data (construct paths relative to project root)
             grid_files = [
-                '2155-Challenge-Problem-2/datasets/grids_0.npy', 
-                '2155-Challenge-Problem-2/datasets/grids_1.npy', 
-                '2155-Challenge-Problem-2/datasets/grids_2.npy', 
-                '2155-Challenge-Problem-2/datasets/grids_3.npy', 
-                '2155-Challenge-Problem-2/datasets/grids_4.npy'
+                os.path.join(self.project_root, '2155-Challenge-Problem-2/datasets/grids_0.npy'), 
+                os.path.join(self.project_root, '2155-Challenge-Problem-2/datasets/grids_1.npy'), 
+                os.path.join(self.project_root, '2155-Challenge-Problem-2/datasets/grids_2.npy'), 
+                os.path.join(self.project_root, '2155-Challenge-Problem-2/datasets/grids_3.npy'), 
+                os.path.join(self.project_root, '2155-Challenge-Problem-2/datasets/grids_4.npy')
             ]
             
             existing_files = [f for f in grid_files if os.path.exists(f)]
