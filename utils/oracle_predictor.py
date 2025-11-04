@@ -11,8 +11,8 @@ import numpy as np
 
 # Try to import oracle classes - handle missing dependencies gracefully
 try:
-    from oracle import CNNTransportationOracle, CNNWellnessOracle
-    from oracle import CNNBusinessOracle, CNNTaxOracle
+    from utils.oracle import CNNTransportationOracle, CNNWellnessOracle
+    from utils.oracle import CNNBusinessOracle, CNNTaxOracle
     ORACLE_CLASSES_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️  Oracle classes not available: {e}")
