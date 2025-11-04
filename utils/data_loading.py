@@ -35,7 +35,7 @@ class DataLoader:
                 return None, None
                 
             generated_files = [f for f in os.listdir(self.generated_dir) 
-                             if f.startswith('combined_constraint_free_grids_') and f.endswith('.npy')]
+                             if f.startswith('template_based_grids_') and f.endswith('.npy')]
             
             if not generated_files:
                 print("⚠️  No generated grids files found")
@@ -48,7 +48,7 @@ class DataLoader:
             generated_grids = np.load(latest_file_path)
             
             # Try to load corresponding predictions
-            predictions_file = latest_file_path.replace('combined_constraint_free_grids_', 'combined_constraint_free_predictions_')
+            predictions_file = latest_file_path.replace('template_based_grids_', 'template_scores_')
             if os.path.exists(predictions_file):
                 generated_predictions = np.load(predictions_file)
                 print(f"✅ Loaded predictions from: {os.path.basename(predictions_file)}")
